@@ -56,7 +56,6 @@ async fn setup_database() -> Pool<Postgres> {
 }
 
 async fn setup_block_state_gotenk(pool: &Pool<Postgres>) {
-    // Create the block_state_gotenk table if it doesn't exist
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS block_state_gotenk (
             id INTEGER PRIMARY KEY,
@@ -67,7 +66,6 @@ async fn setup_block_state_gotenk(pool: &Pool<Postgres>) {
     .await
     .expect("Failed to create block_state_gotenk table");
 
-    // Initialize the table with id = 1 if not already present
     sqlx::query(
         "INSERT INTO block_state_gotenk (id, last_processed_block)
          VALUES (1, 0)
@@ -103,7 +101,6 @@ async fn process_new_events(
         .await
         .expect("Failed to get latest block number");
 
-    // The last block can be set directly in the DB for the first run to avoid syncing from 0
     info!("Last processed block: {}", last_processed_block);
     info!("Latest block: {}", latest_block);
 
@@ -156,7 +153,6 @@ async fn process_block(
         block_number, contract_address
     );
 
-    // Define the event filter
     let filter = EventFilter {
         from_block: Some(BlockId::Number(block_number)),
         to_block: Some(BlockId::Number(block_number)),
@@ -188,7 +184,6 @@ async fn process_block(
     for event in events_page.events {
         let data = event.data.clone();
 
-        // Process the EventFinished event
         if let Some(event_finished) = parse_event_finished_event(&data) {
             info!("✨ New EventFinished event: {:?}", event_finished);
             update_database_for_event_finished(event_finished, pool).await;
@@ -222,7 +217,6 @@ fn parse_event_finished_event(data: &[Felt]) -> Option<EventFinishedEvent> {
 }
 
 async fn update_database_for_event_finished(event: EventFinishedEvent, pool: &Pool<Postgres>) {
-    // Update the 'events' table
     let result =
         sqlx::query("UPDATE events SET is_active = FALSE, outcome = $1 WHERE address = $2")
             .bind(event.event_outcome as i32)
@@ -240,13 +234,12 @@ async fn update_database_for_event_finished(event: EventFinishedEvent, pool: &Po
         event.event_address
     );
 
-    // Update the 'bets' table
     let result = sqlx::query(
         "UPDATE bets SET is_claimable = TRUE
         WHERE \"event_address\" = $1 AND bet = $2",
     )
     .bind(&event.event_address)
-    .bind(event.event_outcome == 1) 
+    .bind(event.event_outcome == 1)
     .execute(pool)
     .await;
 
