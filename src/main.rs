@@ -13,7 +13,7 @@ use std::time::Duration;
 use url::Url;
 
 #[derive(Debug)]
-struct EventFinishedEvent {
+struct EventTimeout {
     event_address: String,
     event_outcome: u8,
     timestamp: u64,
@@ -77,18 +77,22 @@ async fn setup_block_state_gotenk(pool: &Pool<Postgres>) {
 }
 
 async fn fetch_contract_addresses(pool: &Pool<Postgres>) -> Vec<Felt> {
-    let contract_addresses: Vec<Felt> =
-        sqlx::query("SELECT address FROM events WHERE is_active = true")
-            .map(|row: PgRow| {
-                let address: String = row.get("address");
-                Felt::from_hex(&address).expect("Invalid Felt")
-            })
-            .fetch_all(pool)
-            .await
-            .expect("Failed to fetch contract addresses");
+    let contract_addresses: Vec<Felt> = sqlx::query("SELECT address FROM events WHERE is_active = true")
+        .map(|row: PgRow| {
+            let address: String = row.get("address");
+            let felt_address = Felt::from_hex(&address).expect("Invalid Felt");
+            
+            info!("Fetched contract address: {} (Felt: {:?})", address, felt_address);
+            
+            felt_address
+        })
+        .fetch_all(pool)
+        .await
+        .expect("Failed to fetch contract addresses");
 
     contract_addresses
 }
+
 
 async fn process_new_events(
     provider: &JsonRpcClient<HttpTransport>,
@@ -149,15 +153,18 @@ async fn process_block(
     pool: &Pool<Postgres>,
 ) {
     info!(
-        "Fetching EventFinished events for block {} on contract {}",
-        block_number, contract_address
+        "Listening for events on contract address: {} (Felt: {:?}) in block {}",
+        format_address(&contract_address.to_hex_string()),
+        contract_address,
+        block_number,
     );
+        
 
     let filter = EventFilter {
         from_block: Some(BlockId::Number(block_number)),
         to_block: Some(BlockId::Number(block_number)),
         address: Some(contract_address),
-        keys: Some(vec![vec![event_finished_event_key()]]),
+        keys: Some(vec![vec![event_timeout_event_key()]]),
     };
 
     let chunk_size = 100;
@@ -170,16 +177,16 @@ async fn process_block(
     };
 
     info!(
-        "Number of EventFinished events fetched: {}",
+        "Number of EventTimeout events fetched: {}",
         events_page.events.len()
     );
-
+    
     if events_page.events.is_empty() {
         info!(
-            "No EventFinished events found for block {} on contract {}",
+            "No EventTimeout events found for block {} on contract {}",
             block_number, contract_address
         );
-    }
+    }    
 
     for event in events_page.events {
         let data = event.data.clone();
@@ -196,17 +203,19 @@ async fn process_block(
     }
 }
 
-fn event_finished_event_key() -> Felt {
-    get_selector_from_name("EventFinished").expect("Failed to compute event selector")
+fn event_timeout_event_key() -> Felt {
+    let selector = get_selector_from_name("EventTimeout").expect("Failed to compute event selector");
+    info!("EventTimeout selector: {:?}", selector);
+    selector
 }
 
-fn parse_event_finished_event(data: &[Felt]) -> Option<EventFinishedEvent> {
+fn parse_event_finished_event(data: &[Felt]) -> Option<EventTimeout> {
     if data.len() >= 3 {
         let event_address = format_address(&data[0].to_fixed_hex_string());
         let event_outcome = data[1].to_u8().unwrap_or(0);
         let timestamp = data[2].to_u64().unwrap_or(0);
 
-        Some(EventFinishedEvent {
+        Some(EventTimeout {
             event_address,
             event_outcome,
             timestamp,
@@ -216,7 +225,7 @@ fn parse_event_finished_event(data: &[Felt]) -> Option<EventFinishedEvent> {
     }
 }
 
-async fn update_database_for_event_finished(event: EventFinishedEvent, pool: &Pool<Postgres>) {
+async fn update_database_for_event_finished(event: EventTimeout, pool: &Pool<Postgres>) {
     let result =
         sqlx::query("UPDATE events SET is_active = FALSE, outcome = $1 WHERE address = $2")
             .bind(event.event_outcome as i32)
@@ -234,12 +243,13 @@ async fn update_database_for_event_finished(event: EventFinishedEvent, pool: &Po
         event.event_address
     );
 
+    let outcome_as_int = if event.event_outcome == 1 { 1 } else { 0 };
     let result = sqlx::query(
         "UPDATE bets SET is_claimable = TRUE
         WHERE \"event_address\" = $1 AND bet = $2",
     )
     .bind(&event.event_address)
-    .bind(event.event_outcome == 1)
+    .bind(outcome_as_int)
     .execute(pool)
     .await;
 
@@ -259,5 +269,8 @@ fn format_address(address: &str) -> String {
     } else {
         address
     };
-    format!("0x{:0>64}", hex_str)
+    let formatted = format!("0x{:0>64}", hex_str);
+
+    info!("Formatted address: {}", formatted);
+    formatted
 }
