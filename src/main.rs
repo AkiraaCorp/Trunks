@@ -50,49 +50,52 @@ async fn setup_database() -> Pool<Postgres> {
         .await
         .expect("Failed to create database pool");
 
-    setup_block_state_gotenk(&pool).await;
+    setup_block_state_trunks(&pool).await;
 
     pool
 }
 
-async fn setup_block_state_gotenk(pool: &Pool<Postgres>) {
+async fn setup_block_state_trunks(pool: &Pool<Postgres>) {
     sqlx::query(
-        "CREATE TABLE IF NOT EXISTS block_state_gotenk (
+        "CREATE TABLE IF NOT EXISTS block_state_trunks (
             id INTEGER PRIMARY KEY,
             last_processed_block BIGINT NOT NULL
         )",
     )
     .execute(pool)
     .await
-    .expect("Failed to create block_state_gotenk table");
+    .expect("Failed to create block_state_trunks table");
 
     sqlx::query(
-        "INSERT INTO block_state_gotenk (id, last_processed_block)
+        "INSERT INTO block_state_trunks (id, last_processed_block)
          VALUES (1, 0)
          ON CONFLICT (id) DO NOTHING",
     )
     .execute(pool)
     .await
-    .expect("Failed to initialize block_state_gotenk");
+    .expect("Failed to initialize block_state_trunks");
 }
 
 async fn fetch_contract_addresses(pool: &Pool<Postgres>) -> Vec<Felt> {
-    let contract_addresses: Vec<Felt> = sqlx::query("SELECT address FROM events WHERE is_active = true")
-        .map(|row: PgRow| {
-            let address: String = row.get("address");
-            let felt_address = Felt::from_hex(&address).expect("Invalid Felt");
-            
-            info!("Fetched contract address: {} (Felt: {:?})", address, felt_address);
-            
-            felt_address
-        })
-        .fetch_all(pool)
-        .await
-        .expect("Failed to fetch contract addresses");
+    let contract_addresses: Vec<Felt> =
+        sqlx::query("SELECT address FROM events WHERE is_active = true")
+            .map(|row: PgRow| {
+                let address: String = row.get("address");
+                let felt_address = Felt::from_hex(&address).expect("Invalid Felt");
+
+                info!(
+                    "Fetched contract address: {} (Felt: {:?})",
+                    address, felt_address
+                );
+
+                felt_address
+            })
+            .fetch_all(pool)
+            .await
+            .expect("Failed to fetch contract addresses");
 
     contract_addresses
 }
-
 
 async fn process_new_events(
     provider: &JsonRpcClient<HttpTransport>,
@@ -127,7 +130,7 @@ async fn process_new_events(
 
 async fn get_last_processed_block(pool: &Pool<Postgres>) -> u64 {
     let row: (i64,) =
-        sqlx::query_as("SELECT last_processed_block FROM block_state_gotenk WHERE id = 1")
+        sqlx::query_as("SELECT last_processed_block FROM block_state_trunks WHERE id = 1")
             .fetch_one(pool)
             .await
             .expect("Failed to fetch last_processed_block");
@@ -137,7 +140,7 @@ async fn get_last_processed_block(pool: &Pool<Postgres>) -> u64 {
 
 async fn update_last_processed_block(pool: &Pool<Postgres>, block_number: u64) {
     if let Err(e) =
-        sqlx::query("UPDATE block_state_gotenk SET last_processed_block = $1 WHERE id = 1")
+        sqlx::query("UPDATE block_state_trunks SET last_processed_block = $1 WHERE id = 1")
             .bind(block_number as i64)
             .execute(pool)
             .await
@@ -158,7 +161,6 @@ async fn process_block(
         contract_address,
         block_number,
     );
-        
 
     let filter = EventFilter {
         from_block: Some(BlockId::Number(block_number)),
@@ -180,13 +182,13 @@ async fn process_block(
         "Number of EventTimeout events fetched: {}",
         events_page.events.len()
     );
-    
+
     if events_page.events.is_empty() {
         info!(
             "No EventTimeout events found for block {} on contract {}",
             block_number, contract_address
         );
-    }    
+    }
 
     for event in events_page.events {
         let data = event.data.clone();
@@ -204,7 +206,8 @@ async fn process_block(
 }
 
 fn event_timeout_event_key() -> Felt {
-    let selector = get_selector_from_name("EventTimeout").expect("Failed to compute event selector");
+    let selector =
+        get_selector_from_name("EventTimeout").expect("Failed to compute event selector");
     info!("EventTimeout selector: {:?}", selector);
     selector
 }
